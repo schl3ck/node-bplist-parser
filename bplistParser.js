@@ -1,15 +1,14 @@
 /* eslint-disable no-console */
+/* global console */
 
 'use strict';
 
 // adapted from https://github.com/3breadt/dd-plist
 
-const fs = require('fs');
-const bigInt = require('big-integer');
 const debug = false;
 
-exports.maxObjectSize = 100 * 1000 * 1000; // 100Meg
-exports.maxObjectCount = 32768;
+const maxObjectSize = 100 * 1000 * 1000; // 100Meg
+const maxObjectCount = 32768;
 
 // EPOCH = new SimpleDateFormat("yyyy MM dd zzz").parse("2001 01 01 GMT").getTime();
 // ...but that's annoying in a static initializer because it can throw exceptions, ick.
@@ -17,54 +16,35 @@ exports.maxObjectCount = 32768;
 const EPOCH = 978307200000;
 
 // UID object definition
-const UID = exports.UID = function(id) {
-  this.UID = id;
-};
+class UID {
+  constructor(id) {
+    this.UID = id;
+  }
+}
 
-exports.parseFile = function (fileNameOrBuffer, callback) {
-  return new Promise(function (resolve, reject) {
-    function tryParseBuffer(buffer) {
-      let err = null;
-      let result;
-      try {
-        result = parseBuffer(buffer);
-        resolve(result);
-      } catch (ex) {
-        err = ex;
-        reject(err);
-      } finally {
-        if (callback) callback(err, result);
-      }
-    }
-
-    if (Buffer.isBuffer(fileNameOrBuffer)) {
-      return tryParseBuffer(fileNameOrBuffer);
-    }
-    fs.readFile(fileNameOrBuffer, function (err, data) {
-      if (err) {
-        reject(err);
-        return callback(err);
-      }
-      tryParseBuffer(data);
-    });
-  });
-};
-
-const parseBuffer = exports.parseBuffer = function (buffer) {
+/**
+ * @param {Uint8Array} buffer The Array buffer
+ * @returns {void}
+ */
+function parseBuffer(buffer) {
+  if (!(buffer instanceof Uint8Array)) {
+    buffer = new Uint8Array(buffer);
+  }
   // check header
-  const header = buffer.slice(0, 'bplist'.length).toString('utf8');
+  const header = buffer.slice(0, 'bplist'.length).toString();
   if (header !== 'bplist') {
     throw new Error("Invalid binary plist. Expected 'bplist' at offset 0.");
   }
 
   // Handle trailer, last 32 bytes of the file
-  const trailer = buffer.slice(buffer.length - 32, buffer.length);
+  const trailer = buffer.slice(buffer.length - 32);
   // 6 null bytes (index 0 to 5)
-  const offsetSize = trailer.readUInt8(6);
+  const offsetSize = readUInt8(trailer, 6);
   if (debug) {
+    console.log("parsing bplist");
     console.log("offsetSize: " + offsetSize);
   }
-  const objectRefSize = trailer.readUInt8(7);
+  const objectRefSize = readUInt8(trailer, 7);
   if (debug) {
     console.log("objectRefSize: " + objectRefSize);
   }
@@ -81,7 +61,7 @@ const parseBuffer = exports.parseBuffer = function (buffer) {
     console.log("offsetTableOffset: " + offsetTableOffset);
   }
 
-  if (numObjects > exports.maxObjectCount) {
+  if (numObjects > maxObjectCount) {
     throw new Error("maxObjectCount exceeded");
   }
 
@@ -106,46 +86,49 @@ const parseBuffer = exports.parseBuffer = function (buffer) {
     const objType = (type & 0xF0) >> 4; //First  4 bits
     const objInfo = (type & 0x0F);      //Second 4 bits
     switch (objType) {
-    case 0x0:
-      return parseSimple();
-    case 0x1:
-      return parseInteger();
-    case 0x8:
-      return parseUID();
-    case 0x2:
-      return parseReal();
-    case 0x3:
-      return parseDate();
-    case 0x4:
-      return parseData();
-    case 0x5: // ASCII
-      return parsePlistString();
-    case 0x6: // UTF-16
-      return parsePlistString(true);
-    case 0xA:
-      return parseArray();
-    case 0xD:
-      return parseDictionary();
-    default:
-      throw new Error("Unhandled type 0x" + objType.toString(16));
+      case 0x0:
+        return parseSimple();
+      case 0x1:
+        return parseInteger();
+      case 0x8:
+        return parseUID();
+      case 0x2:
+        return parseReal();
+      case 0x3:
+        return parseDate();
+      case 0x4:
+        return parseData();
+      case 0x5: // ASCII
+        return parsePlistString();
+      case 0x6: // UTF-16
+        return parsePlistString(true);
+      case 0xA:
+        return parseArray();
+      case 0xD:
+        return parseDictionary();
+      default:
+        throw new Error("Unhandled type 0x" + objType.toString(16));
     }
 
     function parseSimple() {
       //Simple
       switch (objInfo) {
-      case 0x0: // null
-        return null;
-      case 0x8: // false
-        return false;
-      case 0x9: // true
-        return true;
-      case 0xF: // filler byte
-        return null;
-      default:
-        throw new Error("Unhandled simple type 0x" + objType.toString(16));
+        case 0x0: // null
+          return null;
+        case 0x8: // false
+          return false;
+        case 0x9: // true
+          return true;
+        case 0xF: // filler byte
+          return null;
+        default:
+          throw new Error("Unhandled simple type 0x" + objType.toString(16));
       }
     }
 
+    /**
+     * @param {Uint8Array} buffer
+     */
     function bufferToHexString(buffer) {
       let str = '';
       let i;
@@ -167,37 +150,37 @@ const parseBuffer = exports.parseBuffer = function (buffer) {
       if (objInfo == 0x4) {
         const data = buffer.slice(offset + 1, offset + 1 + length);
         const str = bufferToHexString(data);
-        return bigInt(str, 16);
+        return parseInt(str, 16); // TODO: bigInt(str, 16) from big-integer
       }
       if (objInfo == 0x3) {
-        return buffer.readInt32BE(offset + 1);
+        return readInt32BE(buffer, offset + 1);
       }
-      if (length < exports.maxObjectSize) {
+      if (length < maxObjectSize) {
         return readUInt(buffer.slice(offset + 1, offset + 1 + length));
       }
-      throw new Error("Too little heap space available! Wanted to read " + length + " bytes, but only " + exports.maxObjectSize + " are available.");
+      throw new Error("Too little heap space available! Wanted to read " + length + " bytes, but only " + maxObjectSize + " are available.");
     }
 
     function parseUID() {
       const length = objInfo + 1;
-      if (length < exports.maxObjectSize) {
+      if (length < maxObjectSize) {
         return new UID(readUInt(buffer.slice(offset + 1, offset + 1 + length)));
       }
-      throw new Error("Too little heap space available! Wanted to read " + length + " bytes, but only " + exports.maxObjectSize + " are available.");
+      throw new Error("Too little heap space available! Wanted to read " + length + " bytes, but only " + maxObjectSize + " are available.");
     }
 
     function parseReal() {
       const length = Math.pow(2, objInfo);
-      if (length < exports.maxObjectSize) {
+      if (length < maxObjectSize) {
         const realBuffer = buffer.slice(offset + 1, offset + 1 + length);
         if (length === 4) {
-          return realBuffer.readFloatBE(0);
+          return readFloatBE(realBuffer, 0);
         }
         if (length === 8) {
-          return realBuffer.readDoubleBE(0);
+          return readDoubleBE(realBuffer, 0);
         }
       } else {
-        throw new Error("Too little heap space available! Wanted to read " + length + " bytes, but only " + exports.maxObjectSize + " are available.");
+        throw new Error("Too little heap space available! Wanted to read " + length + " bytes, but only " + maxObjectSize + " are available.");
       }
     }
 
@@ -206,7 +189,7 @@ const parseBuffer = exports.parseBuffer = function (buffer) {
         console.error("Unknown date type :" + objInfo + ". Parsing anyway...");
       }
       const dateBuffer = buffer.slice(offset + 1, offset + 9);
-      return new Date(EPOCH + (1000 * dateBuffer.readDoubleBE(0)));
+      return new Date(EPOCH + (1000 * readDoubleBE(dateBuffer, 0)));
     }
 
     function parseData() {
@@ -227,13 +210,13 @@ const parseBuffer = exports.parseBuffer = function (buffer) {
           length = readUInt(buffer.slice(offset + 2, offset + 2 + intLength));
         }
       }
-      if (length < exports.maxObjectSize) {
+      if (length < maxObjectSize) {
         return buffer.slice(offset + dataoffset, offset + dataoffset + length);
       }
-      throw new Error("Too little heap space available! Wanted to read " + length + " bytes, but only " + exports.maxObjectSize + " are available.");
+      throw new Error("Too little heap space available! Wanted to read " + length + " bytes, but only " + maxObjectSize + " are available.");
     }
 
-    function parsePlistString (isUtf16) {
+    function parsePlistString(isUtf16) {
       isUtf16 = isUtf16 || 0;
       let enc = "utf8";
       let length = objInfo;
@@ -255,15 +238,17 @@ const parseBuffer = exports.parseBuffer = function (buffer) {
       }
       // length is String length -> to get byte length multiply by 2, as 1 character takes 2 bytes in UTF-16
       length *= (isUtf16 + 1);
-      if (length < exports.maxObjectSize) {
-        let plistString = Buffer.from(buffer.slice(offset + stroffset, offset + stroffset + length));
-        if (isUtf16) {
-          plistString = swapBytes(plistString);
-          enc = "ucs2";
-        }
-        return plistString.toString(enc);
+      if (length < maxObjectSize) {
+        // slice copies the buffer
+        let plistString = buffer.slice(offset + stroffset, offset + stroffset + length);
+        if (isUtf16) plistString = swapBytes(plistString);
+        enc = isUtf16
+          ? "utf-16le"
+          : "utf-8";
+        const decoder = new TextDecoder(enc);
+        return decoder.decode(plistString);
       }
-      throw new Error("Too little heap space available! Wanted to read " + length + " bytes, but only " + exports.maxObjectSize + " are available.");
+      throw new Error("Too little heap space available! Wanted to read " + length + " bytes, but only " + maxObjectSize + " are available.");
     }
 
     function parseArray() {
@@ -284,7 +269,7 @@ const parseBuffer = exports.parseBuffer = function (buffer) {
           length = readUInt(buffer.slice(offset + 2, offset + 2 + intLength));
         }
       }
-      if (length * objectRefSize > exports.maxObjectSize) {
+      if (length * objectRefSize > maxObjectSize) {
         throw new Error("Too little heap space available!");
       }
       const array = [];
@@ -313,7 +298,7 @@ const parseBuffer = exports.parseBuffer = function (buffer) {
           length = readUInt(buffer.slice(offset + 2, offset + 2 + intLength));
         }
       }
-      if (length * 2 * objectRefSize > exports.maxObjectSize) {
+      if (length * 2 * objectRefSize > maxObjectSize) {
         throw new Error("Too little heap space available!");
       }
       if (debug) {
@@ -334,32 +319,74 @@ const parseBuffer = exports.parseBuffer = function (buffer) {
     }
   }
 
-  return [ parseObject(topObject) ];
-};
+  return [parseObject(topObject)];
+}
 
-function readUInt(buffer, start) {
-  start = start || 0;
+/**
+ * @param {ArrayBuffer} buffer
+ * @param {number} start
+ */
+function readUInt(buffer, start = 0) {
+  const buf = new Uint8Array(buffer, start);
 
   let l = 0;
-  for (let i = start; i < buffer.length; i++) {
+  for (let i = start; i < buf.length; i++) {
     l <<= 8;
-    l |= buffer[i] & 0xFF;
+    l |= buf[i] & 0xFF;
   }
   return l;
 }
 
 // we're just going to toss the high order bits because javascript doesn't have 64-bit ints
+/**
+ * @param {Uint8Array} buffer
+ * @param {number} start
+ */
 function readUInt64BE(buffer, start) {
-  const data = buffer.slice(start, start + 8);
-  return data.readUInt32BE(4, 8);
+  return new Uint32Array(buffer, start, 8)[1];
 }
 
+/**
+ * @param {Uint8Array} buffer
+ * @param {number} start
+ */
+function readInt32BE(buffer, start) {
+  return new Int32Array(buffer, start, 8)[1];
+}
+
+/**
+ * @param {Uint8Array} buffer
+ * @param {number} start
+ */
+function readFloatBE(buffer, start) {
+  return new Float32Array(buffer, start)[0];
+}
+
+/**
+ * @param {Uint8Array} buffer
+ * @param {number} start
+ */
+function readDoubleBE(buffer, start) {
+  return new Float32Array(buffer, start)[0];
+}
+
+/**
+ * @param {Uint8Array} buffer
+ */
 function swapBytes(buffer) {
   const len = buffer.length;
   for (let i = 0; i < len; i += 2) {
     const a = buffer[i];
-    buffer[i] = buffer[i+1];
-    buffer[i+1] = a;
+    buffer[i] = buffer[i + 1];
+    buffer[i + 1] = a;
   }
   return buffer;
+}
+
+/**
+ * @param {Uint8Array} buffer The array buffer
+ * @param {number} offset An integer offset
+ */
+function readUInt8(buffer, offset = 0) {
+  return buffer[offset];
 }
